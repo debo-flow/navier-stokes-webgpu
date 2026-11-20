@@ -13,6 +13,7 @@ fn computeDivergence(@builtin(global_invocation_id) gid: vec3<u32>) {
   let j = i32(gid.y);
   let id = gid.y * params.nx + gid.x;
   let perX = isPeriodicX(params.preset);
+  let perY = isPeriodicY(params.preset);
 
   if (solid[id] > 0.5) {
     div[id] = 0.0;
@@ -21,9 +22,9 @@ fn computeDivergence(@builtin(global_invocation_id) gid: vec3<u32>) {
     return;
   }
 
-  let uR = u[idxP(i + 1, j, params.nx, params.ny, perX)];
+  let uR = u[idxP(i + 1, j, params.nx, params.ny, perX, perY)];
   let uL = u[id];
-  let vT = v[idxP(i, j + 1, params.nx, params.ny, perX)];
+  let vT = v[idxP(i, j + 1, params.nx, params.ny, perX, perY)];
   let vB = v[id];
 
   let d = (uR - uL + vT - vB) / params.dx;
@@ -38,6 +39,7 @@ fn projectVelocity(@builtin(global_invocation_id) gid: vec3<u32>) {
   let j = i32(gid.y);
   let id = gid.y * params.nx + gid.x;
   let perX = isPeriodicX(params.preset);
+  let perY = isPeriodicY(params.preset);
 
   if (solid[id] > 0.5) {
     u[id] = 0.0;
@@ -48,7 +50,7 @@ fn projectVelocity(@builtin(global_invocation_id) gid: vec3<u32>) {
   let scale = params.dt / params.dx;
 
   if (perX) {
-    let idL = idxP(i - 1, j, params.nx, params.ny, true);
+    let idL = idxP(i - 1, j, params.nx, params.ny, true, perY);
     if (solid[idL] < 0.5) {
       u[id] -= scale * (p[id] - p[idL]);
     } else {
@@ -62,10 +64,19 @@ fn projectVelocity(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
   }
 
-  if (gid.y > 0u && solid[idx(i, j - 1, params.nx, params.ny)] < 0.5) {
-    v[id] -= scale * (p[id] - p[idx(i, j - 1, params.nx, params.ny)]);
+  if (perY) {
+    let idB = idxP(i, j - 1, params.nx, params.ny, perX, true);
+    if (solid[idB] < 0.5) {
+      v[id] -= scale * (p[id] - p[idB]);
+    } else {
+      v[id] = 0.0;
+    }
   } else {
-    v[id] = 0.0;
+    if (gid.y > 0u && solid[idx(i, j - 1, params.nx, params.ny)] < 0.5) {
+      v[id] -= scale * (p[id] - p[idx(i, j - 1, params.nx, params.ny)]);
+    } else {
+      v[id] = 0.0;
+    }
   }
 
   // Re-enforce exact Dirichlet boundary velocities
