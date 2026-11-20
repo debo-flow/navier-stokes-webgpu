@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>2D Incompressible Navier-Stokes — WebGPU CFD</title>
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <div id="app">
+    <canvas id="cfd-canvas"></canvas>
+    <aside id="hud">
+      <div class="header">
+        <h1>NAVIER-STOKES // CFD</h1>
+        <span class="badge">MAC • MACCORMACK • MULTIGRID • WebGPU</span>
+      </div>
+
+      <div class="section">
+        <label>Scenario Preset
+          <select id="preset">
+            <option value="0">Kármán Vortex Street (Cylinder)</option>
+            <option value="1">Lid-Driven Cavity (Ghia 1982)</option>
+            <option value="2">Kelvin-Helmholtz Shear Layer</option>
+            <option value="3">NACA 0012 Airfoil (α = 12°)</option>
+          </select>
+        </label>
+
+        <label>Grid Resolution
+          <select id="resolution">
+            <option value="256">256 × 256 (5-Level MG)</option>
+            <option value="512" selected>512 × 512 (6-Level MG)</option>
+            <option value="1024">1024 × 1024 (7-Level MG)</option>
+          </select>
+        </label>
+
+        <label>Scientific Field View
+          <select id="visMode">
+            <option value="0">Vorticity ω (RdBu Diverging)</option>
+            <option value="1">Velocity Magnitude |u| (Viridis)</option>
+            <option value="2">Pressure Field p (RdBu Diverging)</option>
+            <option value="3">Passive Scalar Dye (Inferno)</option>
+            <option value="4">LIC Streamlines + |u|</option>
+            <option value="5">Velocity Isocontours + |u|</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="section">
+        <label>Reynolds Number (Re): <span id="reVal">400</span>
+          <input type="range" id="reSlider" min="50" max="5000" step="50" value="400" />
+        </label>
+
+        <label>Multigrid V-Cycles: <span id="iterVal">6</span>
+          <input type="range" id="iterSlider" min="2" max="12" step="1" value="6" />
+        </label>
+
+        <label>CFL Safety Number: <span id="cflVal">0.50</span>
+          <input type="range" id="cflSlider" min="0.1" max="0.9" step="0.05" value="0.5" />
+        </label>
+      </div>
+
+      <div class="buttons">
+        <button id="pauseBtn">Pause</button>
+        <button id="resetBtn">Reset Field</button>
+      </div>
+
+      <div id="ghiaCard" class="ghia-card hidden">
+        <div class="probe-title" id="ghiaTitle">Ghia et al. (1982) Benchmark — Re=400</div>
+        <canvas id="ghiaCanvas" width="268" height="150"></canvas>
+        <div class="ghia-legend">
+          <span>● Ghia 1982 Ref</span>
+          <span class="sim-line">— Live u(0.5, y)</span>
+          <strong id="ghiaRms">RMS: —</strong>
+        </div>
+      </div>
+
+      <div class="telemetry">
+        <div><span>Sim Time (t):</span> <strong id="telTime">0.000 s</strong></div>
+        <div><span>Adaptive Δt:</span> <strong id="telDt">0.00e+0 s</strong></div>
+        <div><span>Max |u|:</span> <strong id="telU">0.000</strong></div>
+        <div><span>Max |∇·u|:</span> <strong id="telDiv">0.00e+0</strong></div>
+        <hr />
+        <div class="probe-title">Cursor Probe (Drag to inject force/dye)</div>
+        <div><span>Pos (x, y):</span> <strong id="probePos">—</strong></div>
+        <div><span>Vel (u, v):</span> <strong id="probeVel">—</strong></div>
+        <div><span>Pressure p:</span> <strong id="probeP">—</strong></div>
+        <div><span>Vorticity ω:</span> <strong id="probeW">—</strong></div>
+      </div>
+    </aside>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
