@@ -24,6 +24,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let j = i32(gid.y);
   let id = gid.y * params.nx + gid.x;
   let perX = isPeriodicX(params.preset);
+  let perY = isPeriodicY(params.preset);
 
   if (solid[id] > 0.5) {
     uOut[id] = 0.0;
@@ -44,10 +45,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   let ux0 = i32(floor(backU.x));
   let uy0 = i32(floor(backU.y - 0.5));
-  let u00 = uIn[idxP(ux0, uy0, params.nx, params.ny, perX)];
-  let u10 = uIn[idxP(ux0 + 1, uy0, params.nx, params.ny, perX)];
-  let u01 = uIn[idxP(ux0, uy0 + 1, params.nx, params.ny, perX)];
-  let u11 = uIn[idxP(ux0 + 1, uy0 + 1, params.nx, params.ny, perX)];
+  let u00 = uIn[idxP(ux0, uy0, params.nx, params.ny, perX, perY)];
+  let u10 = uIn[idxP(ux0 + 1, uy0, params.nx, params.ny, perX, perY)];
+  let u01 = uIn[idxP(ux0, uy0 + 1, params.nx, params.ny, perX, perY)];
+  let u11 = uIn[idxP(ux0 + 1, uy0 + 1, params.nx, params.ny, perX, perY)];
   uOut[id] = clamp(uNew, min(min(u00, u10), min(u01, u11)), max(max(u00, u10), max(u01, u11)));
 
   // 2. Advect V at bottom face (i + 0.5, j)
@@ -60,10 +61,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   let vx0 = i32(floor(backV.x - 0.5));
   let vy0 = i32(floor(backV.y));
-  let v00 = vIn[idxP(vx0, vy0, params.nx, params.ny, perX)];
-  let v10 = vIn[idxP(vx0 + 1, vy0, params.nx, params.ny, perX)];
-  let v01 = vIn[idxP(vx0, vy0 + 1, params.nx, params.ny, perX)];
-  let v11 = vIn[idxP(vx0 + 1, vy0 + 1, params.nx, params.ny, perX)];
+  let v00 = vIn[idxP(vx0, vy0, params.nx, params.ny, perX, perY)];
+  let v10 = vIn[idxP(vx0 + 1, vy0, params.nx, params.ny, perX, perY)];
+  let v01 = vIn[idxP(vx0, vy0 + 1, params.nx, params.ny, perX, perY)];
+  let v11 = vIn[idxP(vx0 + 1, vy0 + 1, params.nx, params.ny, perX, perY)];
   vOut[id] = clamp(vNew, min(min(v00, v10), min(v01, v11)), max(max(v00, v10), max(v01, v11)));
 
   // 3. Advect passive dye at cell center (i + 0.5, j + 0.5)
@@ -76,9 +77,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   let dx0 = i32(floor(backC.x - 0.5));
   let dy0 = i32(floor(backC.y - 0.5));
-  let d00 = dyeIn[idxP(dx0, dy0, params.nx, params.ny, perX)];
-  let d10 = dyeIn[idxP(dx0 + 1, dy0, params.nx, params.ny, perX)];
-  let d01 = dyeIn[idxP(dx0, dy0 + 1, params.nx, params.ny, perX)];
-  let d11 = dyeIn[idxP(dx0 + 1, dy0 + 1, params.nx, params.ny, perX)];
+  let d00 = dyeIn[idxP(dx0, dy0, params.nx, params.ny, perX, perY)];
+  let d10 = dyeIn[idxP(dx0 + 1, dy0, params.nx, params.ny, perX, perY)];
+  let d01 = dyeIn[idxP(dx0, dy0 + 1, params.nx, params.ny, perX, perY)];
+  let d11 = dyeIn[idxP(dx0 + 1, dy0 + 1, params.nx, params.ny, perX, perY)];
   dyeOut[id] = clamp(dNew, min(min(d00, d10), min(d01, d11)), max(max(d00, d10), max(d01, d11)));
 }
