@@ -6,13 +6,51 @@ body {
   overflow: hidden;
 }
 #app { display: flex; width: 100vw; height: 100vh; }
-#cfd-canvas {
+
+#viewport {
+  position: relative;
   flex: 1;
   height: 100%;
   width: calc(100vw - 320px);
-  display: block;
-  cursor: crosshair;
+  overflow: hidden;
 }
+#cfd-canvas, #overlay-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+#cfd-canvas { cursor: crosshair; }
+#overlay-canvas { pointer-events: none; }
+
+#colorbar {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  width: 230px;
+  background: rgba(11, 14, 20, 0.84);
+  backdrop-filter: blur(6px);
+  border: 1px solid #334155;
+  border-radius: 6px;
+  padding: 8px 10px;
+  pointer-events: none;
+  font-size: 11px;
+}
+.cb-title { color: #e2e8f0; margin-bottom: 5px; font-weight: 600; }
+.cb-bar {
+  height: 11px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  margin-bottom: 4px;
+}
+.cb-ticks {
+  display: flex;
+  justify-content: space-between;
+  color: #94a3b8;
+  font-size: 10px;
+}
+
 #hud {
   width: 320px;
   background: #111622;
@@ -20,7 +58,7 @@ body {
   padding: 14px;
   display: flex;
   flex-direction: column;
-  gap: 11px;
+  gap: 10px;
   font-size: 12px;
   overflow-y: auto;
 }
@@ -39,7 +77,8 @@ button {
   border: 1px solid #334155; border-radius: 4px; cursor: pointer; font-family: inherit;
 }
 button:hover { background: #334155; }
-.ghia-card {
+
+.diag-card {
   background: #0b0e14;
   border: 1px solid #1e293b;
   border-radius: 6px;
@@ -48,10 +87,14 @@ button:hover { background: #334155; }
   flex-direction: column;
   gap: 6px;
 }
-.ghia-card.hidden { display: none; }
-#ghiaCanvas { width: 100%; height: 150px; background: #080b10; border-radius: 4px; }
-.ghia-legend { display: flex; justify-content: space-between; font-size: 10px; color: #94a3b8; }
-.ghia-legend .sim-line { color: #38bdf8; }
+.diag-card.hidden { display: none; }
+.diag-card canvas { width: 100%; background: #080b10; border-radius: 4px; }
+.diag-legend { display: flex; justify-content: space-between; font-size: 10px; color: #94a3b8; }
+.sim-col { color: #38bdf8; }
+.ref-col { color: #f97316; }
+.cd-col { color: #f43f5e; }
+.cl-col { color: #38bdf8; }
+
 .telemetry {
   margin-top: auto; background: #0b0e14; padding: 10px;
   border-radius: 6px; border: 1px solid #1e293b; display: flex; flex-direction: column; gap: 4px;
