@@ -54,7 +54,6 @@ fn inferno(tIn: f32) -> vec3<f32> {
   return mix(c2, c3, (t - 0.66) / 0.34);
 }
 
-// High-frequency procedural value noise for Line Integral Convolution (LIC)
 fn hash21(p: vec2<f32>) -> f32 {
   var p3 = fract(vec3<f32>(p.xyx) * 0.1031);
   p3 += dot(p3, p3.yzx + 33.33);
@@ -77,7 +76,6 @@ fn computeLIC(gx: f32, gy: f32) -> f32 {
   var acc = licNoise(vec2<f32>(gx, gy) * freq);
   var wSum = 1.0;
 
-  // Forward streamline trace
   var pFwd = vec2<f32>(gx, gy);
   for (var s = 1; s <= 12; s++) {
     let vel = vec2<f32>(
@@ -92,7 +90,6 @@ fn computeLIC(gx: f32, gy: f32) -> f32 {
     wSum += w;
   }
 
-  // Backward streamline trace
   var pBack = vec2<f32>(gx, gy);
   for (var s = 1; s <= 12; s++) {
     let vel = vec2<f32>(
