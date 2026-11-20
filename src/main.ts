@@ -5,6 +5,15 @@ import multigridWGSL from './shaders/multigrid.wgsl?raw';
 import projectionWGSL from './shaders/projection.wgsl?raw';
 import renderWGSL from './shaders/render.wgsl?raw';
 import { nearestGhiaDataset, renderGhiaChart } from './validation/ghia1982';
+import {
+  AeroSample,
+  TaylorGreenSample,
+  computeAeroCoefficients,
+  computeTaylorGreenMetrics,
+  renderAeroChart,
+  renderTaylorGreenChart,
+  updateColorbar,
+} from './validation/diagnostics';
 
 interface SimState {
   nx: number;
@@ -22,6 +31,9 @@ interface SimState {
   mouseVx: number;
   mouseVy: number;
   mouseDown: number;
+  hovering: boolean;
+  cursorPxX: number;
+  cursorPxY: number;
 }
 
 interface MGLevel {
@@ -53,6 +65,8 @@ async function init() {
   const device = await adapter.requestDevice();
 
   const canvas = document.getElementById('cfd-canvas') as HTMLCanvasElement;
+  const overlayCanvas = document.getElementById('overlay-canvas') as HTMLCanvasElement;
+  const overlayCtx = overlayCanvas.getContext('2d')!;
   const context = canvas.getContext('webgpu')!;
   const format = navigator.gpu.getPreferredCanvasFormat();
   context.configure({ device, format, alphaMode: 'opaque' });
@@ -73,6 +87,9 @@ async function init() {
     mouseVx: 0,
     mouseVy: 0,
     mouseDown: 0,
+    hovering: false,
+    cursorPxX: 0,
+    cursorPxY: 0,
   };
 
   // Compile shader modules
@@ -82,7 +99,7 @@ async function init() {
   const projMod = device.createShaderModule({ code: commonWGSL + '\n' + projectionWGSL });
   const renderMod = device.createShaderModule({ code: commonWGSL + '\n' + renderWGSL });
 
-  // Pipelines
+  // Compute & render pipelines
   const advectPipe = device.createComputePipeline({
     layout: 'auto',
     compute: { module: advectMod, entryPoint: 'main' },
@@ -100,7 +117,6 @@ async function init() {
     compute: { module: projMod, entryPoint: 'projectVelocity' },
   });
 
-  // Multigrid pipelines
   const mgClearPipe = device.createComputePipeline({
     layout: 'auto',
     compute: { module: mgMod, entryPoint: 'clearField' },
@@ -149,9 +165,21 @@ async function init() {
   let cpuV = new Float32Array(0);
   let cpuP = new Float32Array(0);
   let cpuDiv = new Float32Array(0);
+  let cpuSolid = new Float32Array(0);
   let isReadingBack = false;
+  let gridVersion = 0;
+
+  let aeroHistory: AeroSample[] = [];
+  let tgHistory: TaylorGreenSample[] = [];
+
+  function characteristicLength(): number {
+    if (state.preset === 0) return 0.11; // Cylinder diameter
+    if (state.preset === 3) return 0.24; // NACA 0012 chord
+    return 1.0;
+  }
 
   function buildGridBuffers() {
+    gridVersion++;
     const count = state.nx * state.ny;
     const bytes = count * 4;
 
@@ -201,7 +229,6 @@ async function init() {
           { binding: 1, resource: { buffer: pBuf } },
         ],
       });
-
       const smoothRedBG = device.createBindGroup({
         layout: mgSmoothPipe.getBindGroupLayout(0),
         entries: [
@@ -211,7 +238,6 @@ async function init() {
           { binding: 3, resource: { buffer: solidBuf } },
         ],
       });
-
       const smoothBlackBG = device.createBindGroup({
         layout: mgSmoothPipe.getBindGroupLayout(0),
         entries: [
@@ -221,7 +247,6 @@ async function init() {
           { binding: 3, resource: { buffer: solidBuf } },
         ],
       });
-
       const residualBG = device.createBindGroup({
         layout: mgResPipe.getBindGroupLayout(0),
         entries: [
@@ -254,7 +279,6 @@ async function init() {
       ldx *= 2.0;
     }
 
-    // Inter-level restriction and prolongation bind groups
     for (let l = 0; l < mgLevels.length - 1; l++) {
       const fine = mgLevels[l];
       const coarse = mgLevels[l + 1];
@@ -269,7 +293,6 @@ async function init() {
           { binding: 4, resource: { buffer: coarse.solidBuf } },
         ],
       });
-
       fine.prolongateBG = device.createBindGroup({
         layout: mgProlongPipe.getBindGroupLayout(0),
         entries: [
@@ -288,6 +311,7 @@ async function init() {
     cpuV = new Float32Array(count);
     cpuP = new Float32Array(count);
     cpuDiv = new Float32Array(count);
+    cpuSolid = new Float32Array(count);
 
     advectBG = device.createBindGroup({
       layout: advectPipe.getBindGroupLayout(0),
@@ -302,7 +326,6 @@ async function init() {
         { binding: 7, resource: { buffer: dyeTmpBuf } },
       ],
     });
-
     forcesBG = device.createBindGroup({
       layout: forcesPipe.getBindGroupLayout(0),
       entries: [
@@ -315,7 +338,6 @@ async function init() {
         { binding: 6, resource: { buffer: dyeTmpBuf } },
       ],
     });
-
     divBG = device.createBindGroup({
       layout: divPipe.getBindGroupLayout(0),
       entries: [
@@ -328,7 +350,7 @@ async function init() {
         { binding: 6, resource: { buffer: fineLvl.solidBuf } },
       ],
     });
-
+    // Only bind entries statically referenced by projectVelocity()
     projectBG = device.createBindGroup({
       layout: projectPipe.getBindGroupLayout(0),
       entries: [
@@ -336,12 +358,9 @@ async function init() {
         { binding: 1, resource: { buffer: uBuf } },
         { binding: 2, resource: { buffer: vBuf } },
         { binding: 3, resource: { buffer: fineLvl.pBuf } },
-        { binding: 4, resource: { buffer: divBuf } },
-        { binding: 5, resource: { buffer: fineLvl.rhsBuf } },
         { binding: 6, resource: { buffer: fineLvl.solidBuf } },
       ],
     });
-
     renderBG = device.createBindGroup({
       layout: renderPipe.getBindGroupLayout(0),
       entries: [
@@ -366,32 +385,31 @@ async function init() {
     const dyeInit = new Float32Array(count);
     const solidInit = new Float32Array(count);
 
-    // NACA 0012 parameters (angle of attack alpha = 12 deg)
     const aoa = (12.0 * Math.PI) / 180.0;
     const cosA = Math.cos(aoa);
     const sinA = Math.sin(aoa);
     const chord = 0.24;
     const leX = 0.22;
     const leY = 0.50;
+    const twoPi = 2.0 * Math.PI;
 
     for (let j = 0; j < ny; j++) {
       const y = (j + 0.5) / ny;
+      const yv = j / ny;
       for (let i = 0; i < nx; i++) {
         const x = (i + 0.5) / nx;
+        const xu = i / nx;
         const id = j * nx + i;
 
         if (preset === 0) {
-          // Wind tunnel cylinder at (0.25, 0.5), radius 0.055
           if (Math.hypot(x - 0.25, y - 0.5) < 0.055) {
             solidInit[id] = 1.0;
           } else {
             uInit[id] = 1.0;
           }
         } else if (preset === 1) {
-          // Lid-driven cavity unit square [0, 1]^2
           if (Math.abs(y - 0.5) < 0.015) dyeInit[id] = 0.85;
         } else if (preset === 2) {
-          // Kelvin-Helmholtz double shear layer
           const width = 0.03;
           if (y > 0.25 && y < 0.75) {
             uInit[id] = 1.0;
@@ -406,7 +424,6 @@ async function init() {
             (Math.exp(-((y - 0.25) ** 2) / (width * width)) +
               Math.exp(-((y - 0.75) ** 2) / (width * width)));
         } else if (preset === 3) {
-          // NACA 0012 Airfoil
           const dx = x - leX;
           const dy = y - leY;
           const xc = (dx * cosA - dy * sinA) / chord;
@@ -428,17 +445,24 @@ async function init() {
           } else {
             uInit[id] = 1.0;
           }
+        } else if (preset === 4) {
+          // Exact Taylor-Green Vortex initialized on MAC staggered faces
+          uInit[id] = Math.sin(twoPi * xu) * Math.cos(twoPi * y);
+          vInit[id] = -Math.cos(twoPi * x) * Math.sin(twoPi * yv);
+          pInit[id] = 0.25 * (Math.cos(4.0 * Math.PI * x) + Math.cos(4.0 * Math.PI * y));
+          dyeInit[id] = 0.5 + 0.5 * Math.sin(twoPi * x) * Math.sin(twoPi * y);
         }
       }
     }
 
+    cpuSolid.set(solidInit);
     device.queue.writeBuffer(uBuf, 0, uInit);
     device.queue.writeBuffer(vBuf, 0, vInit);
     device.queue.writeBuffer(mgLevels[0].pBuf, 0, pInit);
     device.queue.writeBuffer(dyeBuf, 0, dyeInit);
     device.queue.writeBuffer(dyeTmpBuf, 0, dyeInit);
 
-    // Upload solid masks down the Multigrid hierarchy
+    // Downsample solid masks down the Multigrid hierarchy
     let prevSolid = solidInit;
     device.queue.writeBuffer(mgLevels[0].solidBuf, 0, prevSolid);
     for (let l = 1; l < mgLevels.length; l++) {
@@ -451,24 +475,27 @@ async function init() {
           const f10 = prevSolid[cj * 2 * fine.nx + ci * 2 + 1];
           const f01 = prevSolid[(cj * 2 + 1) * fine.nx + ci * 2];
           const f11 = prevSolid[(cj * 2 + 1) * fine.nx + ci * 2 + 1];
-          coarseSolid[cj * lvl.nx + ci] = (f00 + f10 + f01 + f11) >= 2.0 ? 1.0 : 0.0;
+          coarseSolid[cj * lvl.nx + ci] = f00 + f10 + f01 + f11 >= 2.0 ? 1.0 : 0.0;
         }
       }
       device.queue.writeBuffer(lvl.solidBuf, 0, coarseSolid);
       prevSolid = coarseSolid;
     }
 
-    const ghiaCard = document.getElementById('ghiaCard')!;
-    if (preset === 1) ghiaCard.classList.remove('hidden');
-    else ghiaCard.classList.add('hidden');
+    // Toggle scenario-specific diagnostic cards
+    document.getElementById('aeroCard')!.classList.toggle('hidden', preset !== 0 && preset !== 3);
+    document.getElementById('ghiaCard')!.classList.toggle('hidden', preset !== 1);
+    document.getElementById('tgCard')!.classList.toggle('hidden', preset !== 4);
 
+    aeroHistory = [];
+    tgHistory = [];
     state.time = 0;
+    writeAllUniforms();
   }
 
   function writeAllUniforms() {
     const dx = 1.0 / state.nx;
-    const L = state.preset === 0 ? 0.11 : state.preset === 3 ? 0.24 : 1.0;
-    const nu = (1.0 * L) / state.re;
+    const nu = characteristicLength() / state.re;
 
     const writeBuf = (target: GPUBuffer, nx: number, ny: number, ldx: number, rb: number, cNx = 0, cNy = 0) => {
       const buf = new ArrayBuffer(64);
@@ -529,7 +556,6 @@ async function init() {
     const wgY = Math.ceil(state.ny / 16);
     const encoder = device.createCommandEncoder();
 
-    // 1. MacCormack Advection
     {
       const pass = encoder.beginComputePass();
       pass.setPipeline(advectPipe);
@@ -537,8 +563,6 @@ async function init() {
       pass.dispatchWorkgroups(wgX, wgY);
       pass.end();
     }
-
-    // 2. Viscous Diffusion + Forces + Boundary Conditions
     {
       const pass = encoder.beginComputePass();
       pass.setPipeline(forcesPipe);
@@ -546,8 +570,6 @@ async function init() {
       pass.dispatchWorkgroups(wgX, wgY);
       pass.end();
     }
-
-    // 3. Compute Velocity Divergence & Level-0 Poisson RHS
     {
       const pass = encoder.beginComputePass();
       pass.setPipeline(divPipe);
@@ -556,10 +578,8 @@ async function init() {
       pass.end();
     }
 
-    // 4. Geometric Multigrid V-Cycles
     const numLevels = mgLevels.length;
     for (let vc = 0; vc < state.vCycles; vc++) {
-      // Downstroke: pre-smooth, compute residual, restrict to coarse level
       for (let l = 0; l < numLevels - 1; l++) {
         const fine = mgLevels[l];
         const coarse = mgLevels[l + 1];
@@ -589,10 +609,8 @@ async function init() {
         clrPass.end();
       }
 
-      // Coarsest level direct solve
       smoothLevel(encoder, mgLevels[numLevels - 1], 14);
 
-      // Upstroke: prolongate error correction & post-smooth
       for (let l = numLevels - 2; l >= 0; l--) {
         const fine = mgLevels[l];
         const fWgX = Math.ceil(fine.nx / 16);
@@ -608,7 +626,6 @@ async function init() {
       }
     }
 
-    // 5. Pressure Gradient Projection & Dye Buffer Update
     {
       const pass = encoder.beginComputePass();
       pass.setPipeline(projectPipe);
@@ -626,23 +643,38 @@ async function init() {
     if (isReadingBack) return;
     isReadingBack = true;
 
-    const bytes = state.nx * state.ny * 4;
-    const enc = device.createCommandEncoder();
-    enc.copyBufferToBuffer(uBuf, 0, readbackBuf, 0, bytes);
-    enc.copyBufferToBuffer(vBuf, 0, readbackBuf, bytes, bytes);
-    enc.copyBufferToBuffer(mgLevels[0].pBuf, 0, readbackBuf, bytes * 2, bytes);
-    enc.copyBufferToBuffer(divBuf, 0, readbackBuf, bytes * 3, bytes);
-    device.queue.submit([enc.finish()]);
+    const version = gridVersion;
+    const rb = readbackBuf;
+    const nx = state.nx;
+    const ny = state.ny;
+    const count = nx * ny;
+    const bytes = count * 4;
 
-    await readbackBuf.mapAsync(GPUMapMode.READ);
-    const mapped = new Float32Array(readbackBuf.getMappedRange());
-    const count = state.nx * state.ny;
-    cpuU.set(mapped.subarray(0, count));
-    cpuV.set(mapped.subarray(count, count * 2));
-    cpuP.set(mapped.subarray(count * 2, count * 3));
-    cpuDiv.set(mapped.subarray(count * 3, count * 4));
-    readbackBuf.unmap();
-    isReadingBack = false;
+    try {
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(uBuf, 0, rb, 0, bytes);
+      enc.copyBufferToBuffer(vBuf, 0, rb, bytes, bytes);
+      enc.copyBufferToBuffer(mgLevels[0].pBuf, 0, rb, bytes * 2, bytes);
+      enc.copyBufferToBuffer(divBuf, 0, rb, bytes * 3, bytes);
+      device.queue.submit([enc.finish()]);
+
+      await rb.mapAsync(GPUMapMode.READ);
+      if (version !== gridVersion) {
+        rb.unmap();
+        return;
+      }
+
+      const mapped = new Float32Array(rb.getMappedRange());
+      cpuU.set(mapped.subarray(0, count));
+      cpuV.set(mapped.subarray(count, count * 2));
+      cpuP.set(mapped.subarray(count * 2, count * 3));
+      cpuDiv.set(mapped.subarray(count * 3, count * 4));
+      rb.unmap();
+    } catch {
+      return;
+    } finally {
+      isReadingBack = false;
+    }
 
     let maxU = 0.01;
     let maxDiv = 0.0;
@@ -653,8 +685,8 @@ async function init() {
       if (d > maxDiv) maxDiv = d;
     }
 
-    const dx = 1.0 / state.nx;
-    const L = state.preset === 0 ? 0.11 : state.preset === 3 ? 0.24 : 1.0;
+    const dx = 1.0 / nx;
+    const L = characteristicLength();
     const nu = L / state.re;
     const dtCFL = (state.cfl * dx) / maxU;
     const dtVisc = (0.2 * dx * dx) / Math.max(nu, 1e-7);
@@ -665,13 +697,94 @@ async function init() {
     document.getElementById('telU')!.textContent = maxU.toFixed(3);
     document.getElementById('telDiv')!.textContent = maxDiv.toExponential(2);
 
+    // 1. Lift & Drag Coefficients for Cylinder (0) and NACA 0012 Airfoil (3)
+    if (state.preset === 0 || state.preset === 3) {
+      const { cd, cl } = computeAeroCoefficients(cpuU, cpuV, cpuP, cpuSolid, nx, ny, dx, nu, L);
+      aeroHistory.push({ t: state.time, cd, cl });
+      if (aeroHistory.length > 180) aeroHistory.shift();
+      document.getElementById('aeroCd')!.textContent = cd.toFixed(3);
+      document.getElementById('aeroCl')!.textContent = cl.toFixed(3);
+      renderAeroChart(document.getElementById('aeroCanvas') as HTMLCanvasElement, aeroHistory);
+    }
+
+    // 2. Ghia et al. (1982) Benchmark for Lid-Driven Cavity (1)
     if (state.preset === 1) {
       const ref = nearestGhiaDataset(state.re);
       document.getElementById('ghiaTitle')!.textContent = `Ghia et al. (1982) — Re=${ref.re}`;
-      const ghiaCanvas = document.getElementById('ghiaCanvas') as HTMLCanvasElement;
-      const rms = renderGhiaChart(ghiaCanvas, cpuU, state.nx, state.ny, state.re);
+      const rms = renderGhiaChart(
+        document.getElementById('ghiaCanvas') as HTMLCanvasElement,
+        cpuU,
+        nx,
+        ny,
+        state.re
+      );
       document.getElementById('ghiaRms')!.textContent = `RMS: ${rms.toFixed(4)}`;
     }
+
+    // 3. Taylor-Green Vortex Analytical Error & Kinetic Energy Decay (4)
+    if (state.preset === 4) {
+      const tg = computeTaylorGreenMetrics(cpuU, cpuV, nx, ny, nu, state.time);
+      tgHistory.push(tg);
+      if (tgHistory.length > 180) tgHistory.shift();
+      document.getElementById('tgL2')!.textContent = `L2: ${tg.l2Error.toExponential(2)}`;
+      renderTaylorGreenChart(document.getElementById('tgCanvas') as HTMLCanvasElement, tgHistory);
+    }
+  }
+
+  function renderProbeOverlay() {
+    const dpr = devicePixelRatio;
+    const w = overlayCanvas.width;
+    const h = overlayCanvas.height;
+    overlayCtx.clearRect(0, 0, w, h);
+
+    if (!state.hovering || cpuU.length === 0) return;
+
+    const px = state.cursorPxX * dpr;
+    const py = state.cursorPxY * dpr;
+    const gx = Math.min(state.nx - 2, Math.max(1, Math.floor(state.mouseX * state.nx)));
+    const gy = Math.min(state.ny - 2, Math.max(1, Math.floor(state.mouseY * state.ny)));
+    const id = gy * state.nx + gx;
+
+    const uVal = cpuU[id];
+    const vVal = cpuV[id];
+    const pVal = cpuP[id];
+    const dx = 1.0 / state.nx;
+    const omega = (cpuV[id + 1] - cpuV[id - 1] - (cpuU[id + state.nx] - cpuU[id - state.nx])) / (2.0 * dx);
+
+    overlayCtx.save();
+    overlayCtx.strokeStyle = 'rgba(56, 189, 248, 0.9)';
+    overlayCtx.lineWidth = 1.25 * dpr;
+    const r = 9 * dpr;
+    overlayCtx.beginPath();
+    overlayCtx.arc(px, py, r, 0, Math.PI * 2);
+    overlayCtx.moveTo(px - r * 1.6, py);
+    overlayCtx.lineTo(px - r * 0.5, py);
+    overlayCtx.moveTo(px + r * 0.5, py);
+    overlayCtx.lineTo(px + r * 1.6, py);
+    overlayCtx.moveTo(px, py - r * 1.6);
+    overlayCtx.lineTo(px, py - r * 0.5);
+    overlayCtx.moveTo(px, py + r * 0.5);
+    overlayCtx.lineTo(px, py + r * 1.6);
+    overlayCtx.stroke();
+
+    const tag = `|u|=${Math.hypot(uVal, vVal).toFixed(2)}  ω=${omega.toFixed(1)}  p=${pVal.toFixed(3)}`;
+    overlayCtx.font = `${10.5 * dpr}px ui-monospace, monospace`;
+    const tw = overlayCtx.measureText(tag).width + 12 * dpr;
+    const th = 20 * dpr;
+    const bx = px + 14 * dpr + tw > w ? px - tw - 14 * dpr : px + 14 * dpr;
+    const by = py - th - 10 * dpr < 0 ? py + 14 * dpr : py - th - 10 * dpr;
+
+    overlayCtx.fillStyle = 'rgba(11, 14, 20, 0.85)';
+    overlayCtx.strokeStyle = 'rgba(56, 189, 248, 0.6)';
+    overlayCtx.lineWidth = 1 * dpr;
+    overlayCtx.beginPath();
+    overlayCtx.roundRect(bx, by, tw, th, 4 * dpr);
+    overlayCtx.fill();
+    overlayCtx.stroke();
+
+    overlayCtx.fillStyle = '#e2e8f0';
+    overlayCtx.fillText(tag, bx + 6 * dpr, by + 13.5 * dpr);
+    overlayCtx.restore();
   }
 
   function renderFrame() {
@@ -685,6 +798,8 @@ async function init() {
     pass.draw(3);
     pass.end();
     device.queue.submit([encoder.finish()]);
+
+    renderProbeOverlay();
   }
 
   function bindUI() {
@@ -703,7 +818,11 @@ async function init() {
 
     bindSelect('preset', (v) => { state.preset = v; resetScenario(); });
     bindSelect('resolution', (v) => { state.nx = v; state.ny = v; buildGridBuffers(); });
-    bindSelect('visMode', (v) => { state.visMode = v; });
+    bindSelect('visMode', (v) => {
+      state.visMode = v;
+      updateColorbar(v);
+      writeAllUniforms();
+    });
 
     bindSlider('reSlider', 'reVal', (v) => `${v}`, (v) => { state.re = v; });
     bindSlider('iterSlider', 'iterVal', (v) => `${v}`, (v) => { state.vCycles = v; });
@@ -723,10 +842,15 @@ async function init() {
       prevY = 1.0 - (e.clientY - r.top) / r.height;
     });
     window.addEventListener('pointerup', () => { state.mouseDown = 0; });
+    canvas.addEventListener('pointerleave', () => { state.hovering = false; });
     canvas.addEventListener('pointermove', (e) => {
       const r = canvas.getBoundingClientRect();
-      const nx = (e.clientX - r.left) / r.width;
-      const ny = 1.0 - (e.clientY - r.top) / r.height;
+      state.hovering = true;
+      state.cursorPxX = e.clientX - r.left;
+      state.cursorPxY = e.clientY - r.top;
+
+      const nx = state.cursorPxX / r.width;
+      const ny = 1.0 - state.cursorPxY / r.height;
       state.mouseVx = (nx - prevX) * 60.0;
       state.mouseVy = (ny - prevY) * 60.0;
       state.mouseX = nx;
@@ -753,11 +877,16 @@ async function init() {
     });
 
     const resize = () => {
-      canvas.width = canvas.clientWidth * devicePixelRatio;
-      canvas.height = canvas.clientHeight * devicePixelRatio;
+      const w = canvas.clientWidth * devicePixelRatio;
+      const h = canvas.clientHeight * devicePixelRatio;
+      canvas.width = w;
+      canvas.height = h;
+      overlayCanvas.width = w;
+      overlayCanvas.height = h;
     };
     window.addEventListener('resize', resize);
     resize();
+    updateColorbar(state.visMode);
   }
 
   bindUI();
