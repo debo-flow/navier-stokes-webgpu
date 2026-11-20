@@ -8,7 +8,21 @@
 </head>
 <body>
   <div id="app">
-    <canvas id="cfd-canvas"></canvas>
+    <div id="viewport">
+      <canvas id="cfd-canvas"></canvas>
+      <canvas id="overlay-canvas"></canvas>
+
+      <div id="colorbar">
+        <div class="cb-title" id="cbTitle">Vorticity ω [1/s]</div>
+        <div class="cb-bar" id="cbBar"></div>
+        <div class="cb-ticks">
+          <span id="cbMin">-16.7</span>
+          <span id="cbMid">0.0</span>
+          <span id="cbMax">+16.7</span>
+        </div>
+      </div>
+    </div>
+
     <aside id="hud">
       <div class="header">
         <h1>NAVIER-STOKES // CFD</h1>
@@ -22,6 +36,7 @@
             <option value="1">Lid-Driven Cavity (Ghia 1982)</option>
             <option value="2">Kelvin-Helmholtz Shear Layer</option>
             <option value="3">NACA 0012 Airfoil (α = 12°)</option>
+            <option value="4">Taylor-Green Vortex (Analytical)</option>
           </select>
         </label>
 
@@ -64,13 +79,35 @@
         <button id="resetBtn">Reset Field</button>
       </div>
 
-      <div id="ghiaCard" class="ghia-card hidden">
+      <!-- Aerodynamic Forces Card (Cylinder & Airfoil) -->
+      <div id="aeroCard" class="diag-card">
+        <div class="probe-title">Aerodynamic Forces (C_D / C_L)</div>
+        <canvas id="aeroCanvas" width="268" height="120"></canvas>
+        <div class="diag-legend">
+          <span class="cd-col">■ C_D: <strong id="aeroCd">0.000</strong></span>
+          <span class="cl-col">■ C_L: <strong id="aeroCl">0.000</strong></span>
+        </div>
+      </div>
+
+      <!-- Ghia et al. (1982) Benchmark Card (Lid-Driven Cavity) -->
+      <div id="ghiaCard" class="diag-card hidden">
         <div class="probe-title" id="ghiaTitle">Ghia et al. (1982) Benchmark — Re=400</div>
-        <canvas id="ghiaCanvas" width="268" height="150"></canvas>
-        <div class="ghia-legend">
-          <span>● Ghia 1982 Ref</span>
-          <span class="sim-line">— Live u(0.5, y)</span>
+        <canvas id="ghiaCanvas" width="268" height="145"></canvas>
+        <div class="diag-legend">
+          <span class="ref-col">● Ghia 1982</span>
+          <span class="sim-col">— Live u(0.5,y)</span>
           <strong id="ghiaRms">RMS: —</strong>
+        </div>
+      </div>
+
+      <!-- Taylor-Green Analytical Verification Card -->
+      <div id="tgCard" class="diag-card hidden">
+        <div class="probe-title">Taylor-Green Analytical Verification</div>
+        <canvas id="tgCanvas" width="268" height="125"></canvas>
+        <div class="diag-legend">
+          <span class="ref-col">-- Exact E(t)</span>
+          <span class="sim-col">— Sim E(t)</span>
+          <strong id="tgL2">L2: 0.00e+0</strong>
         </div>
       </div>
 
