@@ -1,6 +1,5 @@
 @group(0) @binding(0) var<uniform> params: SimParams;
 
-// Shared discrete Poisson stencil ensuring exact consistency between RBGS and Residual
 fn gatherNeighbors(
   i: i32,
   j: i32,
@@ -11,13 +10,14 @@ fn gatherNeighbors(
   solid: ptr<storage, array<f32>, read>
 ) -> vec2<f32> {
   let perX = isPeriodicX(preset);
+  let perY = isPeriodicY(preset);
   var sumP = 0.0;
   var count = 0.0;
 
   if (perX) {
-    let idL = idxP(i - 1, j, nx, ny, true);
+    let idL = idxP(i - 1, j, nx, ny, true, perY);
     if ((*solid)[idL] < 0.5) { sumP += (*p)[idL]; count += 1.0; }
-    let idR = idxP(i + 1, j, nx, ny, true);
+    let idR = idxP(i + 1, j, nx, ny, true, perY);
     if ((*solid)[idR] < 0.5) { sumP += (*p)[idR]; count += 1.0; }
   } else {
     if (i > 0) {
@@ -27,7 +27,6 @@ fn gatherNeighbors(
     if (u32(i) + 1u < nx) {
       let idR = idx(i + 1, j, nx, ny);
       if ((*solid)[idR] < 0.5) {
-        // Dirichlet p = 0 at wind tunnel outlet
         let isTunnel = (preset == 0u || preset == 3u);
         if (!isTunnel || u32(i) + 1u < nx - 1u) {
           sumP += (*p)[idR];
@@ -37,13 +36,20 @@ fn gatherNeighbors(
     }
   }
 
-  if (j > 0) {
-    let idB = idx(i, j - 1, nx, ny);
+  if (perY) {
+    let idB = idxP(i, j - 1, nx, ny, perX, true);
     if ((*solid)[idB] < 0.5) { sumP += (*p)[idB]; count += 1.0; }
-  }
-  if (u32(j) + 1u < ny) {
-    let idT = idx(i, j + 1, nx, ny);
+    let idT = idxP(i, j + 1, nx, ny, perX, true);
     if ((*solid)[idT] < 0.5) { sumP += (*p)[idT]; count += 1.0; }
+  } else {
+    if (j > 0) {
+      let idB = idx(i, j - 1, nx, ny);
+      if ((*solid)[idB] < 0.5) { sumP += (*p)[idB]; count += 1.0; }
+    }
+    if (u32(j) + 1u < ny) {
+      let idT = idx(i, j + 1, nx, ny);
+      if ((*solid)[idT] < 0.5) { sumP += (*p)[idT]; count += 1.0; }
+    }
   }
 
   return vec2<f32>(sumP, count);
@@ -78,13 +84,14 @@ fn smoothRBGS(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
 
   let perX = isPeriodicX(params.preset);
+  let perY = isPeriodicY(params.preset);
   var sumP = 0.0;
   var count = 0.0;
 
   if (perX) {
-    let idL = idxP(i - 1, j, params.nx, params.ny, true);
+    let idL = idxP(i - 1, j, params.nx, params.ny, true, perY);
     if (solidSmooth[idL] < 0.5) { sumP += pSmooth[idL]; count += 1.0; }
-    let idR = idxP(i + 1, j, params.nx, params.ny, true);
+    let idR = idxP(i + 1, j, params.nx, params.ny, true, perY);
     if (solidSmooth[idR] < 0.5) { sumP += pSmooth[idR]; count += 1.0; }
   } else {
     if (i > 0) {
@@ -103,18 +110,24 @@ fn smoothRBGS(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
   }
 
-  if (j > 0) {
-    let idB = idx(i, j - 1, params.nx, params.ny);
+  if (perY) {
+    let idB = idxP(i, j - 1, params.nx, params.ny, perX, true);
     if (solidSmooth[idB] < 0.5) { sumP += pSmooth[idB]; count += 1.0; }
-  }
-  if (gid.y + 1u < params.ny) {
-    let idT = idx(i, j + 1, params.nx, params.ny);
+    let idT = idxP(i, j + 1, params.nx, params.ny, perX, true);
     if (solidSmooth[idT] < 0.5) { sumP += pSmooth[idT]; count += 1.0; }
+  } else {
+    if (j > 0) {
+      let idB = idx(i, j - 1, params.nx, params.ny);
+      if (solidSmooth[idB] < 0.5) { sumP += pSmooth[idB]; count += 1.0; }
+    }
+    if (gid.y + 1u < params.ny) {
+      let idT = idx(i, j + 1, params.nx, params.ny);
+      if (solidSmooth[idT] < 0.5) { sumP += pSmooth[idT]; count += 1.0; }
+    }
   }
 
   if (count > 0.0) {
     let pGS = (sumP - params.dx * params.dx * rhsSmooth[id]) / count;
-    // omega = 1.35 provides optimal high-frequency damping in Multigrid RBGS
     pSmooth[id] = mix(pSmooth[id], pGS, 1.35);
   }
 }
@@ -146,7 +159,7 @@ fn computeResidual(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
 }
 
-// 4. Restriction: downsample residual from fine (nx, ny) -> coarse (coarseNx, coarseNy)
+// 4. Restriction: downsample residual fine -> coarse
 @group(0) @binding(1) var<storage, read> resFine: array<f32>;
 @group(0) @binding(2) var<storage, read> solidFine: array<f32>;
 @group(0) @binding(3) var<storage, read_write> rhsCoarse: array<f32>;
@@ -193,21 +206,21 @@ fn prolongateAdd(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (solidFineP[fid] > 0.5) { return; }
 
   let perX = isPeriodicX(params.preset);
+  let perY = isPeriodicY(params.preset);
   var cx = 0.5 * f32(gid.x) - 0.25;
-  if (!perX) {
-    cx = clamp(cx, 0.0, f32(params.coarseNx) - 1.001);
-  }
-  let cy = clamp(0.5 * f32(gid.y) - 0.25, 0.0, f32(params.coarseNy) - 1.001);
+  if (!perX) { cx = clamp(cx, 0.0, f32(params.coarseNx) - 1.001); }
+  var cy = 0.5 * f32(gid.y) - 0.25;
+  if (!perY) { cy = clamp(cy, 0.0, f32(params.coarseNy) - 1.001); }
 
   let x0 = i32(floor(cx));
   let y0 = i32(floor(cy));
   let tx = cx - f32(x0);
   let ty = cy - f32(y0);
 
-  let id00 = idxP(x0, y0, params.coarseNx, params.coarseNy, perX);
-  let id10 = idxP(x0 + 1, y0, params.coarseNx, params.coarseNy, perX);
-  let id01 = idxP(x0, y0 + 1, params.coarseNx, params.coarseNy, perX);
-  let id11 = idxP(x0 + 1, y0 + 1, params.coarseNx, params.coarseNy, perX);
+  let id00 = idxP(x0, y0, params.coarseNx, params.coarseNy, perX, perY);
+  let id10 = idxP(x0 + 1, y0, params.coarseNx, params.coarseNy, perX, perY);
+  let id01 = idxP(x0, y0 + 1, params.coarseNx, params.coarseNy, perX, perY);
+  let id11 = idxP(x0 + 1, y0 + 1, params.coarseNx, params.coarseNy, perX, perY);
 
   let w00 = (1.0 - tx) * (1.0 - ty) * select(0.0, 1.0, solidCoarseP[id00] < 0.5);
   let w10 = tx * (1.0 - ty) * select(0.0, 1.0, solidCoarseP[id10] < 0.5);
