@@ -13,6 +13,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let j = i32(gid.y);
   let id = gid.y * params.nx + gid.x;
   let perX = isPeriodicX(params.preset);
+  let perY = isPeriodicY(params.preset);
 
   if (solid[id] > 0.5) {
     uOut[id] = 0.0;
@@ -23,17 +24,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   // Explicit 5-point Laplacian diffusion: u += dt * nu * laplacian(u)
   let invDx2 = 1.0 / (params.dx * params.dx);
   let uC = uIn[id];
-  let uL = uIn[idxP(i - 1, j, params.nx, params.ny, perX)];
-  let uR = uIn[idxP(i + 1, j, params.nx, params.ny, perX)];
-  let uB = uIn[idxP(i, j - 1, params.nx, params.ny, perX)];
-  let uT = uIn[idxP(i, j + 1, params.nx, params.ny, perX)];
+  let uL = uIn[idxP(i - 1, j, params.nx, params.ny, perX, perY)];
+  let uR = uIn[idxP(i + 1, j, params.nx, params.ny, perX, perY)];
+  let uB = uIn[idxP(i, j - 1, params.nx, params.ny, perX, perY)];
+  let uT = uIn[idxP(i, j + 1, params.nx, params.ny, perX, perY)];
   var uVal = uC + params.dt * params.nu * (uL + uR + uB + uT - 4.0 * uC) * invDx2;
 
   let vC = vIn[id];
-  let vL = vIn[idxP(i - 1, j, params.nx, params.ny, perX)];
-  let vR = vIn[idxP(i + 1, j, params.nx, params.ny, perX)];
-  let vB = vIn[idxP(i, j - 1, params.nx, params.ny, perX)];
-  let vT = vIn[idxP(i, j + 1, params.nx, params.ny, perX)];
+  let vL = vIn[idxP(i - 1, j, params.nx, params.ny, perX, perY)];
+  let vR = vIn[idxP(i + 1, j, params.nx, params.ny, perX, perY)];
+  let vB = vIn[idxP(i, j - 1, params.nx, params.ny, perX, perY)];
+  let vT = vIn[idxP(i, j + 1, params.nx, params.ny, perX, perY)];
   var vVal = vC + params.dt * params.nu * (vL + vR + vB + vT - 4.0 * vC) * invDx2;
 
   // Interactive mouse force + dye injection
@@ -49,9 +50,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
   }
 
-  // Scenario-specific Boundary Conditions
+  // Scenario-specific Boundary Conditions (preset 4 = doubly periodic Taylor-Green, no walls)
   if (params.preset == 0u || params.preset == 3u) {
-    // External wind tunnel (Cylinder / Airfoil)
     if (gid.x <= 1u) {
       uVal = 1.0;
       vVal = 0.0;
@@ -67,7 +67,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       vVal = 0.0;
     }
   } else if (params.preset == 1u) {
-    // Lid-Driven Cavity: top wall U = 1.0, side/bottom walls no-slip
     if (gid.y == params.ny - 1u) {
       uVal = 1.0;
       vVal = 0.0;
@@ -76,7 +75,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       vVal = 0.0;
     }
   } else if (params.preset == 2u) {
-    // Kelvin-Helmholtz: periodic X, free-slip Y
     if (gid.y == 0u || gid.y >= params.ny - 1u) {
       vVal = 0.0;
     }
@@ -84,7 +82,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   // Zero normal flux into solid obstacles
   if (!perX && i > 0 && solid[idx(i - 1, j, params.nx, params.ny)] > 0.5) { uVal = 0.0; }
-  if (j > 0 && solid[idx(i, j - 1, params.nx, params.ny)] > 0.5) { vVal = 0.0; }
+  if (!perY && j > 0 && solid[idx(i, j - 1, params.nx, params.ny)] > 0.5) { vVal = 0.0; }
 
   uOut[id] = uVal;
   vOut[id] = vVal;
